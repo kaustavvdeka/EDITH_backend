@@ -40,14 +40,24 @@ class GeminiService {
         }
     }
 
+    // Truncate chat history to avoid exceeding token limits
+    // Keeps the last N messages plus an optional system summary
+    truncateHistory(chatHistory, maxMessages = 20) {
+        if (chatHistory.length <= maxMessages) return chatHistory;
+        return chatHistory.slice(-maxMessages);
+    }
+
     // Text generation for chat
     async generateTextResponse(prompt, chatHistory = [], options = {}) {
         try {
             const startTime = Date.now();
             
+            // Window the history to prevent token overflow
+            const windowedHistory = this.truncateHistory(chatHistory);
+
             // Create chat instance
             const chat = this.textModel.startChat({
-                history: chatHistory.map(msg => ({
+                history: windowedHistory.map(msg => ({
                     role: msg.role === 'assistant' ? 'model' : 'user',
                     parts: [{ text: msg.content }],
                 })),
@@ -77,6 +87,49 @@ class GeminiService {
         } catch (error) {
             console.error('Gemini text generation error:', error);
             throw new AppError('Failed to generate AI response. Please try again.', 500);
+        }
+    }
+
+    // Streaming text generation for SSE-based chat
+    async *streamTextResponse(prompt, chatHistory = [], options = {}) {
+        try {
+            // Window the history to prevent token overflow
+            const windowedHistory = this.truncateHistory(chatHistory);
+
+            const chat = this.textModel.startChat({
+                history: windowedHistory.map(msg => ({
+                    role: msg.role === 'assistant' ? 'model' : 'user',
+                    parts: [{ text: msg.content }],
+                })),
+                generationConfig: {
+                    temperature: options.temperature || 0.7,
+                    maxOutputTokens: options.maxTokens || 2048,
+                },
+            });
+
+            const result = await chat.sendMessageStream(prompt);
+
+            for await (const chunk of result.stream) {
+                const text = chunk.text();
+                if (text) {
+                    yield { type: 'chunk', text };
+                }
+            }
+
+            // Final aggregated response for metadata
+            const aggregated = await result.response;
+            yield {
+                type: 'done',
+                tokens: {
+                    input: aggregated.usageMetadata?.promptTokenCount || 0,
+                    output: aggregated.usageMetadata?.candidatesTokenCount || 0,
+                    total: aggregated.usageMetadata?.totalTokenCount || 0,
+                },
+                model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
+            };
+        } catch (error) {
+            console.error('Gemini streaming error:', error);
+            throw new AppError('Failed to generate streaming AI response. Please try again.', 500);
         }
     }
 

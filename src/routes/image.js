@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const imageController = require('../controllers/imageController');
 const { protect } = require('../middleware/auth');
-const { imageUpload, handleMulterError } = require('../middleware/upload');
+const { imageUpload, handleMulterError, validateFileMagicBytes } = require('../middleware/upload');
 
 // All routes require authentication
 router.use(protect);
@@ -12,6 +12,7 @@ router.post(
     '/analyze',
     imageUpload.single('image'),
     handleMulterError,
+    validateFileMagicBytes,
     imageController.analyzeImage
 );
 router.get('/history', imageController.getImageHistory);

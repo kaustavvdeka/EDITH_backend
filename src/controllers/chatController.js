@@ -101,6 +101,107 @@ exports.sendMessage = async (req, res, next) => {
     }
 };
 
+// @desc    Send message and stream AI response via SSE
+// @route   POST /api/chat/:chatId/stream
+// @access  Private
+exports.streamMessage = async (req, res, next) => {
+    try {
+        const { message } = req.body;
+        const { chatId } = req.params;
+
+        // Find chat
+        let chat = await Chat.findOne({
+            _id: chatId,
+            userId: req.user.id,
+        });
+
+        if (!chat) {
+            return res.status(404).json({ success: false, error: 'Chat not found' });
+        }
+
+        // Add user message
+        await chat.addMessage('user', message);
+
+        // Prepare chat history for Gemini
+        const chatHistory = chat.messages.slice(0, -1).map(msg => ({
+            role: msg.role,
+            content: msg.content,
+        }));
+
+        // Set SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        const startTime = Date.now();
+        let fullText = '';
+        let tokenData = {};
+
+        // Stream AI response
+        const stream = geminiService.streamTextResponse(message, chatHistory);
+
+        for await (const event of stream) {
+            if (event.type === 'chunk') {
+                fullText += event.text;
+                res.write(`data: ${JSON.stringify({ type: 'chunk', text: event.text })}\n\n`);
+            } else if (event.type === 'done') {
+                tokenData = event.tokens || {};
+
+                const responseTime = Date.now() - startTime;
+
+                // Persist AI response to chat
+                await chat.addMessage('assistant', fullText, {
+                    tokens: tokenData.total || 0,
+                    model: event.model,
+                    responseTime,
+                });
+
+                // Log AI request
+                await AIRequest.create({
+                    userId: req.user.id,
+                    type: 'chat',
+                    model: event.model,
+                    input: { text: message },
+                    output: { text: fullText },
+                    tokens: tokenData,
+                    status: 'completed',
+                    responseTime,
+                });
+
+                // Update user stats
+                await User.findByIdAndUpdate(req.user.id, {
+                    $inc: { 'stats.tokensUsed': tokenData.total || 0 },
+                });
+
+                // Send done event with metadata
+                res.write(`data: ${JSON.stringify({
+                    type: 'done',
+                    tokens: tokenData,
+                    model: event.model,
+                    responseTime,
+                    chat: {
+                        _id: chat._id,
+                        title: chat.title,
+                        totalTokens: chat.totalTokens,
+                    },
+                })}\n\n`);
+            }
+        }
+
+        res.end();
+    } catch (error) {
+        // If headers already sent, close SSE gracefully
+        if (res.headersSent) {
+            res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+            res.end();
+        } else {
+            next(error);
+        }
+    }
+};
+
 // @desc    Get user's chats
 // @route   GET /api/chat/list
 // @access  Private

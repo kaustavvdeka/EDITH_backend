@@ -30,6 +30,7 @@ const updateChatValidation = [
 // Routes
 router.post('/new', chatController.createChat);
 router.post('/:chatId/message', sendMessageValidation, validate, chatController.sendMessage);
+router.post('/:chatId/stream', sendMessageValidation, validate, chatController.streamMessage);
 router.get('/list', chatController.getChats);
 router.get('/:chatId', chatController.getChat);
 router.patch('/:chatId', updateChatValidation, validate, chatController.updateChat);

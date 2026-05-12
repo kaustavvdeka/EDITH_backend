@@ -114,9 +114,55 @@ const handleMulterError = (err, req, res, next) => {
     next(err);
 };
 
+// Magic-byte validation middleware (runs AFTER multer processes the upload)
+// Validates that the actual file content matches the declared MIME type
+const fs = require('fs');
+
+const MAGIC_BYTES = {
+    'image/jpeg': [Buffer.from([0xFF, 0xD8, 0xFF])],
+    'image/png':  [Buffer.from([0x89, 0x50, 0x4E, 0x47])],
+    'image/gif':  [Buffer.from('GIF87a'), Buffer.from('GIF89a')],
+    'image/webp': [Buffer.from('RIFF')], // RIFF....WEBP
+    'application/pdf': [Buffer.from('%PDF')],
+};
+
+const validateFileMagicBytes = (req, res, next) => {
+    if (!req.file) return next();
+
+    const file = req.file;
+    // Skip for cloud-stored files (Cloudinary handles its own validation)
+    if (file.path && file.path.startsWith('http')) return next();
+
+    try {
+        const buffer = fs.readFileSync(file.path);
+        const signatures = MAGIC_BYTES[file.mimetype];
+
+        if (signatures) {
+            const isValid = signatures.some(sig => {
+                if (buffer.length < sig.length) return false;
+                return sig.every((byte, i) => byte === buffer[i]);
+            });
+
+            if (!isValid) {
+                // Delete the suspicious file
+                fs.unlinkSync(file.path);
+                return next(new AppError(
+                    'File content does not match its declared type. Upload rejected for security.',
+                    400
+                ));
+            }
+        }
+
+        next();
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     imageUpload,
     documentUpload,
     generalUpload,
     handleMulterError,
+    validateFileMagicBytes,
 };
